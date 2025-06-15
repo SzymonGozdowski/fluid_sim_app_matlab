@@ -1,0 +1,287 @@
+classdef fluid_sim_app < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure               matlab.ui.Figure
+        AuthorMenu             matlab.ui.container.Menu
+        CreditMenu             matlab.ui.container.Menu
+        ClearthewindowButton   matlab.ui.control.Button
+        DrawanobjectButton     matlab.ui.control.Button
+        ChoosespeedEditField   matlab.ui.control.NumericEditField
+        SpeedGauge             matlab.ui.control.Gauge
+        SpeedGaugeLabel        matlab.ui.control.Label
+        FluidtypeButtonGroup   matlab.ui.container.ButtonGroup
+        MercuryButton          matlab.ui.control.RadioButton
+        HoneyButton            matlab.ui.control.RadioButton
+        WaterButton            matlab.ui.control.RadioButton
+        Lamp                   matlab.ui.control.Lamp
+        SimulationSwitch       matlab.ui.control.Switch
+        SimulationSwitchLabel  matlab.ui.control.Label
+        TextArea_2             matlab.ui.control.TextArea
+        TextArea               matlab.ui.control.TextArea
+        UIAxes                 matlab.ui.control.UIAxes
+    end
+
+    
+    properties (Access = private)
+        running = false; % Description
+        speed_value = 0.;
+    end
+    
+    methods (Access = private)
+        
+        % Function for Runge-Kutta 4th order method for advection
+        function [x_new, y_new] = RK4(~, px, py, vx, vy, h)
+               % Ensure particles stay within bounds
+            px = min(max(px, 1), size(vx,2));
+            py = min(max(py, 1), size(vx,1));
+           k1x = interp2(vx, px, py);
+           k1y = interp2(vy, px, py);
+           k2x = interp2(vx, px + h/2 * k1x, py + h/2 * k1y);
+           k2y = interp2(vy, px + h/2 * k1x, py + h/2 * k1y);
+           k3x = interp2(vx, px + h/2 * k2x, py + h/2 * k2y);
+           k3y = interp2(vy, px + h/2 * k2x, py + h/2 * k2y);
+           k4x = interp2(vx, px + h * k3x, py + h * k3y);
+           k4y = interp2(vy, px + h * k3x, py + h * k3y);
+           x_new = px + h/6 * (k1x + 2*k2x + 2*k3x + k4x);
+           y_new = py + h/6 * (k1y + 2*k2y + 2*k3y + k4y);
+        end
+        
+        function show_simulation(app)
+                                % Simulation parameters
+    s = 200;
+    ar = 2;
+    J = [0 1 0; 1 0 1; 0 1 0]/4;
+
+    [X, Y] = meshgrid(1:s*ar, 1:s);
+    [p, vx, vy] = deal(zeros(s, s*ar));
+    [px, py] = meshgrid(10:15, 95:105);
+    px = reshape(px, [], 1);
+    py = reshape(py, [], 1);
+    pxo = px;
+    pyo = py;
+
+    while isvalid(app.UIAxes) && app.running
+        vx(95:105, 10:15) = app.speed_value;
+
+        rhs = -divergence(vx, vy);
+
+        for i = 1:100
+            p = conv2(p, J, 'same') + rhs/2;
+        end
+
+        [dx, dy] = gradient(p);
+        vx(2:end-1, 2:end-1) = vx(2:end-1, 2:end-1) - dx(2:end-1, 2:end-1);
+        vy(2:end-1, 2:end-1) = vy(2:end-1, 2:end-1) - dy(2:end-1, 2:end-1);
+
+        [pvx, pvy] = app.RK4(X, Y, vx, vy, -1);
+        vx = interp2(vx, pvx, pvy);
+        vy = interp2(vy, pvx, pvy);
+
+        [px, py] = app.RK4(px, py, vx, vy, 1);
+        px = [px; pxo];
+        py = [py; pyo];
+
+        cla(app.UIAxes); % Clear UIAxes before plotting
+        scatter(app.UIAxes, px, py, 1, 'filled');
+        axis(app.UIAxes, 'equal');
+        axis(app.UIAxes, [0 s*ar 0 s]);
+        drawnow;
+    end
+
+        end
+    end
+    
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Callback function: SimulationSwitch, UIAxes
+        function SimulationSwitchValueChanged(app, event)
+            value = app.SimulationSwitch.Value;
+            switch value
+                case 'Off'
+                    app.Lamp.Color =  'red';
+                    app.running = false;
+
+                case 'On'
+                    app.Lamp.Color =  'green';
+                    app.running = true;
+                    show_simulation(app)
+            end
+            
+        end
+
+        % Value changed function: ChoosespeedEditField
+        function ChoosespeedEditFieldValueChanged(app, event)
+            app.speed_value = 0.1 * app.ChoosespeedEditField.Value;
+            app.SpeedGauge.Value = app.speed_value;
+        end
+
+        % Menu selected function: AuthorMenu
+        function AuthorMenuSelected(app, event)
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % Funkcja wyswietlajaca informacje o uzytkowniku w postaci
+            % komunikatu (uialert)
+            omnie = sprintf("Autor: Szymon Gozdowski \n" + ...
+                "\n" + ...
+                "Adress email: sgozdowski@student.agh.edu.pl@agh.edu.pl");
+
+            uialert(app.UIFigure,omnie,"O mnie","Icon","info");
+        end
+
+        % Menu selected function: CreditMenu
+        function CreditMenuSelected(app, event)
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % Funkcja wyswietlajaca informacje o twórcy symulacji (oryginalnej) w postaci
+            % komunikatu (uialert)
+            credit_to_original = sprintf("Original creator of simulation: Robert Schütze \n" + ...
+                "\n" + ...
+                "GitHub link: https://github.com/robert-trirop/MATLAB-2D-Fluid-Simulation/blob/main/MATLAB_2D_Fluid_Simulation.m");
+
+            uialert(app.UIFigure, credit_to_original,"Credit to original","Icon","info");
+        end
+
+        % Button pushed function: ClearthewindowButton
+        function ClearthewindowButtonPushed(app, event)
+            cla(app.UIAxes); 
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible', 'off');
+            app.UIFigure.Position = [100 100 705 502];
+            app.UIFigure.Name = 'MATLAB App';
+
+            % Create AuthorMenu
+            app.AuthorMenu = uimenu(app.UIFigure);
+            app.AuthorMenu.MenuSelectedFcn = createCallbackFcn(app, @AuthorMenuSelected, true);
+            app.AuthorMenu.Text = 'Author';
+
+            % Create CreditMenu
+            app.CreditMenu = uimenu(app.UIFigure);
+            app.CreditMenu.MenuSelectedFcn = createCallbackFcn(app, @CreditMenuSelected, true);
+            app.CreditMenu.Text = 'Credit';
+
+            % Create UIAxes
+            app.UIAxes = uiaxes(app.UIFigure);
+            title(app.UIAxes, 'Title')
+            xlabel(app.UIAxes, 'X')
+            ylabel(app.UIAxes, 'Y')
+            zlabel(app.UIAxes, 'Z')
+            app.UIAxes.XLim = [0 400];
+            app.UIAxes.YLim = [0 200];
+            app.UIAxes.ButtonDownFcn = createCallbackFcn(app, @SimulationSwitchValueChanged, true);
+            app.UIAxes.Position = [1 32 391 368];
+
+            % Create TextArea
+            app.TextArea = uitextarea(app.UIFigure);
+            app.TextArea.FontSize = 18;
+            app.TextArea.Position = [298 464 135 27];
+            app.TextArea.Value = {'Fluid simulation'};
+
+            % Create TextArea_2
+            app.TextArea_2 = uitextarea(app.UIFigure);
+            app.TextArea_2.Position = [57 409 322 36];
+            app.TextArea_2.Value = {'You are allowed to choose: fluid type, speed and draw an object, that will show resistance.'};
+
+            % Create SimulationSwitchLabel
+            app.SimulationSwitchLabel = uilabel(app.UIFigure);
+            app.SimulationSwitchLabel.HorizontalAlignment = 'center';
+            app.SimulationSwitchLabel.Position = [578 399 61 22];
+            app.SimulationSwitchLabel.Text = 'Simulation';
+
+            % Create SimulationSwitch
+            app.SimulationSwitch = uiswitch(app.UIFigure, 'slider');
+            app.SimulationSwitch.ValueChangedFcn = createCallbackFcn(app, @SimulationSwitchValueChanged, true);
+            app.SimulationSwitch.Position = [582 375 45 20];
+
+            % Create Lamp
+            app.Lamp = uilamp(app.UIFigure);
+            app.Lamp.Position = [493 378 20 20];
+            app.Lamp.Color = [1 0 0];
+
+            % Create FluidtypeButtonGroup
+            app.FluidtypeButtonGroup = uibuttongroup(app.UIFigure);
+            app.FluidtypeButtonGroup.TitlePosition = 'centertop';
+            app.FluidtypeButtonGroup.Title = 'Fluid type';
+            app.FluidtypeButtonGroup.Position = [579 92 100 91];
+
+            % Create WaterButton
+            app.WaterButton = uiradiobutton(app.FluidtypeButtonGroup);
+            app.WaterButton.Text = 'Water';
+            app.WaterButton.Position = [10 46 58 22];
+            app.WaterButton.Value = true;
+
+            % Create HoneyButton
+            app.HoneyButton = uiradiobutton(app.FluidtypeButtonGroup);
+            app.HoneyButton.Text = 'Honey';
+            app.HoneyButton.Position = [10 23 65 22];
+
+            % Create MercuryButton
+            app.MercuryButton = uiradiobutton(app.FluidtypeButtonGroup);
+            app.MercuryButton.Text = 'Mercury';
+            app.MercuryButton.Position = [10 2 65 22];
+
+            % Create SpeedGaugeLabel
+            app.SpeedGaugeLabel = uilabel(app.UIFigure);
+            app.SpeedGaugeLabel.HorizontalAlignment = 'center';
+            app.SpeedGaugeLabel.Position = [478 314 166 22];
+            app.SpeedGaugeLabel.Text = 'Speed';
+
+            % Create SpeedGauge
+            app.SpeedGauge = uigauge(app.UIFigure, 'circular');
+            app.SpeedGauge.Position = [442 218 89 89];
+
+            % Create ChoosespeedEditField
+            app.ChoosespeedEditField = uieditfield(app.UIFigure, 'numeric');
+            app.ChoosespeedEditField.ValueChangedFcn = createCallbackFcn(app, @ChoosespeedEditFieldValueChanged, true);
+            app.ChoosespeedEditField.Position = [579 239 101 47];
+
+            % Create DrawanobjectButton
+            app.DrawanobjectButton = uibutton(app.UIFigure, 'push');
+            app.DrawanobjectButton.Position = [435 138 95 23];
+            app.DrawanobjectButton.Text = 'Draw an object';
+
+            % Create ClearthewindowButton
+            app.ClearthewindowButton = uibutton(app.UIFigure, 'push');
+            app.ClearthewindowButton.ButtonPushedFcn = createCallbackFcn(app, @ClearthewindowButtonPushed, true);
+            app.ClearthewindowButton.Position = [434 94 107 22];
+            app.ClearthewindowButton.Text = 'Clear the window';
+
+            % Show the figure after all components are created
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = fluid_sim_app
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end
