@@ -1,0 +1,432 @@
+classdef fluid_sim_app < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure               matlab.ui.Figure
+        AuthorMenu             matlab.ui.container.Menu
+        CreditMenu             matlab.ui.container.Menu
+        FlowrateLabel          matlab.ui.control.Label
+        StopdrawingButton      matlab.ui.control.Button
+        ClearthewindowButton   matlab.ui.control.Button
+        DrawanobjectButton     matlab.ui.control.Button
+        ChoosespeedEditField   matlab.ui.control.NumericEditField
+        Lamp                   matlab.ui.control.Lamp
+        SimulationSwitch       matlab.ui.control.Switch
+        SimulationSwitchLabel  matlab.ui.control.Label
+        TextArea_2             matlab.ui.control.TextArea
+        TextArea               matlab.ui.control.TextArea
+        UIAxes                 matlab.ui.control.UIAxes
+    end
+
+    
+    properties (Access = private)
+        running = false; % Description
+        speed_value = 0.;
+        DrawnLine
+        IsDrawing = false            % True while mouse is held down
+        DrawingEnabled = false       % True when user has pressed "Start Drawing"
+        CurrentLine
+        AllDrawnPoints = {}
+    end
+    
+    methods (Access = private)
+        
+        % Function for Runge-Kutta 4th order method for advection
+        function [x_new, y_new] = RK4(~, px, py, vx, vy, h)
+    
+            if numel(vx) < 4 || isempty(px) || isempty(py)
+                x_new = px;
+                y_new = py;
+                return;
+            end
+                        % Remove NaN or Inf particles (optional cleanup)
+            valid = isfinite(px) & isfinite(py);
+            px = px(valid);
+            py = py(valid);
+
+
+               % Ensure particles stay within bounds
+            px = min(max(px, 1), size(vx,2));
+            py = min(max(py, 1), size(vx,1));
+           k1x = interp2(vx, px, py);
+           k1y = interp2(vy, px, py);
+           k2x = interp2(vx, px + h/2 * k1x, py + h/2 * k1y);
+           k2y = interp2(vy, px + h/2 * k1x, py + h/2 * k1y);
+           k3x = interp2(vx, px + h/2 * k2x, py + h/2 * k2y);
+           k3y = interp2(vy, px + h/2 * k2x, py + h/2 * k2y);
+           k4x = interp2(vx, px + h * k3x, py + h * k3y);
+           k4y = interp2(vy, px + h * k3x, py + h * k3y);
+           x_new = px + h/6 * (k1x + 2*k2x + 2*k3x + k4x);
+           y_new = py + h/6 * (k1y + 2*k2y + 2*k3y + k4y);
+        end
+        
+        %function show_simulation(app)
+                                % Simulation parameters
+        function show_simulation(app)
+    % Simulation parameters
+    s = 200;
+    ar = 2;
+    J = [0 1 0; 1 0 1; 0 1 0]/4;
+    [X, Y] = meshgrid(1:s*ar, 1:s);
+    [p, vx, vy] = deal(zeros(s, s*ar));
+    [px, py] = meshgrid(10:15, 95:105);
+    px = reshape(px, [], 1);
+    py = reshape(py, [], 1);
+    pxo = px;
+    pyo = py;
+
+    % --- Convert drawn points to obstruction mask ---
+    obstruction = false(s, s*ar);
+    if ~isempty(app.AllDrawnPoints)
+        for k = 1:numel(app.AllDrawnPoints)
+            points = app.AllDrawnPoints{k};
+            for i = 1:size(points,1)
+                x = round(points(i,1));
+                y = round(points(i,2));
+                if x >= 1 && x <= s*ar && y >= 1 && y <= s
+                    obstruction(y, x) = true;
+                end
+            end
+        end
+        % Optional: thicken obstruction
+        %obstruction = imdilate(obstruction, strel('disk', 2));
+        %se = fspecial('disk', 2) > 0;  % approximate circular structuring element
+        %obstruction = conv2(double(obstruction), double(se), 'same') > 0;
+        kernel = ones(5);  % Square "disk" approximation with radius ~2
+        obstruction = conv2(double(obstruction), kernel, 'same') > 0;
+    end
+
+    while isvalid(app.UIAxes) && app.running
+        vx(95:105, 10:15) = app.speed_value;
+        % Resize vy to match vx if needed
+        [sy, sx] = size(vx);
+        vy = app.resizeOrCrop(vy, sy, sx);
+        rhs = -divergence(vx, vy);
+
+        for i = 1:100
+            p = conv2(p, J, 'same') + rhs/2;
+        end
+
+        [dx, dy] = gradient(p);
+        vx(2:end-1, 2:end-1) = vx(2:end-1, 2:end-1) - dx(2:end-1, 2:end-1);
+        vy(2:end-1, 2:end-1) = vy(2:end-1, 2:end-1) - dy(2:end-1, 2:end-1);
+
+        [pvx, pvy] = app.RK4(X, Y, vx, vy, -1);
+        vx_adv = interp2(vx, pvx, pvy);
+        vy_adv = interp2(vy, pvx, pvy);
+        
+        % Ensure vx_adv and vy_adv are reshaped to original size
+        vx = reshape(vx_adv, size(vx));
+        vy = reshape(vy_adv, size(vy));
+
+        % Enforce obstruction: zero velocity inside drawn lines
+        vx(obstruction) = 0;
+        vy(obstruction) = 0;
+
+        % Clean invalid particles
+        valid = isfinite(px) & isfinite(py);
+        px = px(valid);
+        py = py(valid);
+
+        % Reset particles if empty
+        if isempty(px) || isempty(py)
+            [px, py] = meshgrid(10:15, 95:105);
+            px = reshape(px, [], 1);
+            py = reshape(py, [], 1);
+        end
+
+        % Clamp particle positions
+        px = min(max(px, 1), size(vx,2));
+        py = min(max(py, 1), size(vx,1));
+
+        % Advect particles
+        %[px, py] = app.RK4(px, py, vx, vy, 1);
+       if ~isempty(px) && ~isempty(py) && size(vx,1) > 1 && size(vx,2) > 1
+            [px_new, py_new] = app.RK4(px, py, vx, vy, 1);
+        
+            % Clamp new positions
+            px_new = min(max(round(px_new), 1), size(vx,2));
+            py_new = min(max(round(py_new), 1), size(vx,1));
+        
+            % Convert to linear indices
+            idx = sub2ind(size(obstruction), py_new, px_new);
+        
+            % Detect particles inside obstruction
+            in_obstruction = obstruction(idx);
+        
+            % Keep old positions for particles inside obstruction
+            px(~in_obstruction) = px_new(~in_obstruction);
+            py(~in_obstruction) = py_new(~in_obstruction);
+        
+            % Optionally: reset obstructed particles
+            px(in_obstruction) = 12;
+            py(in_obstruction) = 100;
+        end
+
+        % Append original particles to keep them visible
+        px = [px; pxo];
+        py = [py; pyo];
+
+        cla(app.UIAxes);
+        hold(app.UIAxes, 'on');
+        scatter(app.UIAxes, px, py, 1, 'filled');
+
+        % Redraw user-drawn lines
+        if ~isempty(app.AllDrawnPoints)
+            for k = 1:numel(app.AllDrawnPoints)
+                pts = app.AllDrawnPoints{k};
+                plot(app.UIAxes, pts(:,1), pts(:,2), 'k', 'LineWidth', 1.5);
+            end
+        end
+
+        axis(app.UIAxes, 'equal');
+        axis(app.UIAxes, [0 s*ar 0 s]);
+        hold(app.UIAxes, 'off');
+        drawnow;
+    end
+end
+     
+        function startupFcn(app)
+            hold(app.UIAxes, 'on');
+            app.UIFigure.WindowButtonDownFcn = @(src, event) startDrawing(app);
+            app.UIFigure.WindowButtonMotionFcn = @(src, event) continueDrawing(app);
+            app.UIFigure.WindowButtonUpFcn = @(src, event) stopDrawing(app);
+        end
+        
+        function startDrawing(app)
+            if ~app.DrawingEnabled
+                return;
+            end
+        
+            cp = get(app.UIAxes, 'CurrentPoint');
+            x = cp(1,1); y = cp(1,2);
+        
+            app.CurrentLine = plot(app.UIAxes, x, y, '-k', 'LineWidth', 2);
+            app.IsDrawing = true;
+        end
+        
+        function continueDrawing(app)
+            if app.IsDrawing
+                cp = get(app.UIAxes, 'CurrentPoint');
+                x = cp(1,1); y = cp(1,2);
+                app.CurrentLine.XData(end+1) = x;
+                app.CurrentLine.YData(end+1) = y;
+            end
+        end
+        
+        function stopDrawing(app)
+            if app.IsDrawing
+                app.IsDrawing = false;
+        
+                stroke = [app.CurrentLine.XData; app.CurrentLine.YData]';
+                app.AllDrawnPoints{end+1} = stroke;
+            end
+        end
+        
+        function out = resizeOrCrop(~, v, rows, cols)
+            sr = size(v,1);
+            sc = size(v,2);
+            out = v;
+            if sr < rows
+                out(end+1:rows, :) = 0;
+            elseif sr > rows
+                out = out(1:rows, :);
+            end
+            if sc < cols
+                out(:, end+1:cols) = 0;
+            elseif sc > cols
+                out = out(:, 1:cols);
+            end
+        end
+    end
+    
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Value changed function: SimulationSwitch
+        function SimulationSwitchValueChanged(app, event)
+            value = app.SimulationSwitch.Value;
+            switch value
+                case 'Off'
+                    app.Lamp.Color =  'red';
+                    app.running = false;
+
+                case 'On'
+                    app.Lamp.Color =  'green';
+                    app.running = true;
+                    show_simulation(app)
+            end
+            
+        end
+
+        % Value changed function: ChoosespeedEditField
+        function ChoosespeedEditFieldValueChanged(app, event)
+            app.speed_value = 0.1 * app.ChoosespeedEditField.Value;
+            
+        end
+
+        % Menu selected function: AuthorMenu
+        function AuthorMenuSelected(app, event)
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % Funkcja wyswietlajaca informacje o uzytkowniku w postaci
+            % komunikatu (uialert)
+            omnie = sprintf("Autor: Szymon Gozdowski \n" + ...
+                "\n" + ...
+                "Adress email: sgozdowski@student.agh.edu.pl");
+
+            uialert(app.UIFigure,omnie,"O mnie","Icon","info");
+        end
+
+        % Menu selected function: CreditMenu
+        function CreditMenuSelected(app, event)
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % Funkcja wyswietlajaca informacje o twórcy symulacji (oryginalnej) w postaci
+            % komunikatu (uialert)
+            credit_to_original = sprintf("Original creator of simulation: Robert Schütze \n" + ...
+                "\n" + ...
+                "GitHub link: https://github.com/robert-trirop/MATLAB-2D-Fluid-Simulation/blob/main/MATLAB_2D_Fluid_Simulation.m");
+
+            uialert(app.UIFigure, credit_to_original,"Credit to original","Icon","info");
+        end
+
+        % Button pushed function: ClearthewindowButton
+        function ClearthewindowButtonPushed(app, event)
+            cla(app.UIAxes); 
+        end
+
+        % Button pushed function: DrawanobjectButton
+        function DrawanobjectButtonPushed(app, event)
+            app.DrawingEnabled = true;
+            disp("Drawing enabled. Click and drag on the axes.");
+            app.startupFcn()
+        end
+
+        % Button pushed function: StopdrawingButton
+        function StopdrawingButtonPushed(app, event)
+            app.DrawingEnabled = false;           
+        end
+
+        % Button down function: UIAxes
+        function UIAxesButtonDown(app, event)
+            
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible', 'off');
+            app.UIFigure.Position = [100 100 705 502];
+            app.UIFigure.Name = 'MATLAB App';
+
+            % Create AuthorMenu
+            app.AuthorMenu = uimenu(app.UIFigure);
+            app.AuthorMenu.MenuSelectedFcn = createCallbackFcn(app, @AuthorMenuSelected, true);
+            app.AuthorMenu.Text = 'Author';
+
+            % Create CreditMenu
+            app.CreditMenu = uimenu(app.UIFigure);
+            app.CreditMenu.MenuSelectedFcn = createCallbackFcn(app, @CreditMenuSelected, true);
+            app.CreditMenu.Text = 'Credit';
+
+            % Create UIAxes
+            app.UIAxes = uiaxes(app.UIFigure);
+            xlabel(app.UIAxes, 'X')
+            ylabel(app.UIAxes, 'Y')
+            zlabel(app.UIAxes, 'Z')
+            app.UIAxes.XLim = [0 400];
+            app.UIAxes.YLim = [0 200];
+            app.UIAxes.ButtonDownFcn = createCallbackFcn(app, @UIAxesButtonDown, true);
+            app.UIAxes.Position = [1 26 551 411];
+
+            % Create TextArea
+            app.TextArea = uitextarea(app.UIFigure);
+            app.TextArea.FontSize = 18;
+            app.TextArea.Position = [96 462 135 27];
+            app.TextArea.Value = {'Fluid simulation'};
+
+            % Create TextArea_2
+            app.TextArea_2 = uitextarea(app.UIFigure);
+            app.TextArea_2.Position = [307 457 322 36];
+            app.TextArea_2.Value = {'You are allowed to choose flow rate (between -33 and 33) and draw an object, that will provide resistance.'};
+
+            % Create SimulationSwitchLabel
+            app.SimulationSwitchLabel = uilabel(app.UIFigure);
+            app.SimulationSwitchLabel.HorizontalAlignment = 'center';
+            app.SimulationSwitchLabel.Position = [602 381 61 22];
+            app.SimulationSwitchLabel.Text = 'Simulation';
+
+            % Create SimulationSwitch
+            app.SimulationSwitch = uiswitch(app.UIFigure, 'slider');
+            app.SimulationSwitch.ValueChangedFcn = createCallbackFcn(app, @SimulationSwitchValueChanged, true);
+            app.SimulationSwitch.Position = [625 357 45 20];
+
+            % Create Lamp
+            app.Lamp = uilamp(app.UIFigure);
+            app.Lamp.Position = [560 357 20 20];
+            app.Lamp.Color = [1 0 0];
+
+            % Create ChoosespeedEditField
+            app.ChoosespeedEditField = uieditfield(app.UIFigure, 'numeric');
+            app.ChoosespeedEditField.ValueChangedFcn = createCallbackFcn(app, @ChoosespeedEditFieldValueChanged, true);
+            app.ChoosespeedEditField.Position = [582 219 101 47];
+
+            % Create DrawanobjectButton
+            app.DrawanobjectButton = uibutton(app.UIFigure, 'push');
+            app.DrawanobjectButton.ButtonPushedFcn = createCallbackFcn(app, @DrawanobjectButtonPushed, true);
+            app.DrawanobjectButton.Position = [583 164 105 21];
+            app.DrawanobjectButton.Text = 'Draw an object';
+
+            % Create ClearthewindowButton
+            app.ClearthewindowButton = uibutton(app.UIFigure, 'push');
+            app.ClearthewindowButton.ButtonPushedFcn = createCallbackFcn(app, @ClearthewindowButtonPushed, true);
+            app.ClearthewindowButton.Position = [581 36 107 22];
+            app.ClearthewindowButton.Text = 'Clear the window';
+
+            % Create StopdrawingButton
+            app.StopdrawingButton = uibutton(app.UIFigure, 'push');
+            app.StopdrawingButton.ButtonPushedFcn = createCallbackFcn(app, @StopdrawingButtonPushed, true);
+            app.StopdrawingButton.Position = [585 130 102 23];
+            app.StopdrawingButton.Text = 'Stop drawing';
+
+            % Create FlowrateLabel
+            app.FlowrateLabel = uilabel(app.UIFigure);
+            app.FlowrateLabel.HorizontalAlignment = 'center';
+            app.FlowrateLabel.Position = [579 265 107 52];
+            app.FlowrateLabel.Text = 'Flow rate';
+
+            % Show the figure after all components are created
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = fluid_sim_app
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end
